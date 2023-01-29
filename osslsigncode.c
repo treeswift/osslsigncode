@@ -125,7 +125,12 @@
 #include <curl/curl.h>
 
 #define MAX_TS_SERVERS 256
+#else
+typedef int CURLcode;
 #endif /* ENABLE_CURL */
+#ifdef ENABLE_CMDL
+#include <popen2.h>
+#endif /* ENABLE_CMDL */
 
 #if defined (HAVE_TERMIOS_H) || defined (HAVE_GETPASS)
 #define PROVIDE_ASKPASS 1
@@ -228,6 +233,9 @@ typedef struct {
 	const EVP_MD *md;
 	char *url;
 	time_t time;
+#ifdef ENABLE_CMDL
+	char *tcmd;
+#endif
 #ifdef ENABLE_CURL
 	char *turl[MAX_TS_SERVERS];
 	int nturl;
@@ -522,7 +530,7 @@ ASN1_SEQUENCE(MessageImprint) = {
 
 IMPLEMENT_ASN1_FUNCTIONS(MessageImprint)
 
-#ifdef ENABLE_CURL
+#if defined(ENABLE_CURL) || defined(ENABLE_CMDL)
 
 typedef struct {
 	ASN1_OBJECT *type;
@@ -609,7 +617,7 @@ ASN1_SEQUENCE(TimeStampReq) = {
 
 IMPLEMENT_ASN1_FUNCTIONS(TimeStampReq)
 
-#endif /* ENABLE_CURL */
+#endif /* ENABLE_CURL || ENABLE_CMDL */
 
 typedef struct {
 	ASN1_INTEGER *seconds;
@@ -789,7 +797,7 @@ static int is_content_type(PKCS7 *p7, const char *objid)
 	return retval;
 }
 
-#ifdef ENABLE_CURL
+#if defined(ENABLE_CURL) || defined(ENABLE_CMDL)
 
 static int blob_has_nl = 0;
 
@@ -1053,6 +1061,7 @@ static CURLcode decode_authenticode_response(PKCS7 *sig, BIO *bin, int verbose)
 	return 0; /* OK */
 }
 
+#ifdef ENABLE_CURL
 /*
  * Add timestamp to the PKCS7 SignerInfo structure:
  * sig->d.sign->signer_info->unauth_attr
@@ -1166,6 +1175,35 @@ static int add_timestamp_rfc3161(PKCS7 *sig, GLOBAL_OPTIONS *options)
 }
 #endif /* ENABLE_CURL */
 
+#ifdef ENABLE_CMDL
+
+static int add_timestamp_commandline(PKCS7 *sig, GLOBAL_OPTIONS *options)
+{
+	BIO *bout, *bin;
+	u_char *p = NULL;
+	long len = 0;
+	struct files_t *fp;
+	int res = 1; /* FAILED */
+
+	if(options->tcmd) {
+		bout = encode_rfc3161_request(sig, options->md);
+		len = BIO_get_mem_data(bout, &p);
+
+		fp = popen2(options->tcmd);
+		fwrite(p, 1, len, fp->in);
+    	fflush(fp->in);
+		BIO_free_all(bout);
+
+		bin = BIO_new_fp(fp->out, BIO_NOCLOSE);
+
+		res = decode_rfc3161_response(sig, bin, options->verbose);
+		pclose2(fp);
+	}
+	return res;
+}
+#endif /* ENABLE_CMDL */
+#endif /* ENABLE_CURL || ENABLE_CMDL */
+
 
 static bool on_list(const char *txt, const char *list[])
 {
@@ -1203,6 +1241,9 @@ static void usage(const char *argv0, const char *cmd)
 		printf("%12s[ -h {md5,sha1,sha2(56),sha384,sha512} ]\n", "");
 		printf("%12s[ -n <desc> ] [ -i <url> ] [ -jp <level> ] [ -comm ]\n", "");
 		printf("%12s[ -ph ]\n", "");
+#ifdef ENABLE_CMDL
+		printf("%12s[ -cmd <local-command-line>\n", "");
+#endif
 #ifdef ENABLE_CURL
 		printf("%12s[ -t <timestampurl> [ -t ... ] [ -p <proxy> ] [ -noverifypeer  ]\n", "");
 		printf("%12s[ -ts <timestampurl> [ -ts ... ] [ -p <proxy> ] [ -noverifypeer ] ]\n", "");
@@ -5773,6 +5814,14 @@ static int main_configure(int argc, char **argv, cmd_type_t *cmd, GLOBAL_OPTIONS
 				return 0; /* FAILED */
 			}
 			options->time = (time_t)strtoul(*(++argv), NULL, 10);
+#ifdef ENABLE_CMDL
+		} else if ((*cmd == CMD_SIGN || *cmd == CMD_ADD) && !strcmp(*argv, "-cmd")) {
+			if (--argc < 1) {
+				usage(argv0, "all");
+				return 0; /* FAILED */
+			}
+			options->tcmd = *(++argv);
+#endif
 #ifdef ENABLE_CURL
 		} else if ((*cmd == CMD_SIGN || *cmd == CMD_ADD) && !strcmp(*argv, "-t")) {
 			if (--argc < 1) {
@@ -6112,6 +6161,11 @@ int main(int argc, char **argv)
 		}
 	}
 
+#ifdef ENABLE_CMDL
+	if (options.tcmd && add_timestamp_commandline(sig, &options))
+		DO_EXIT_2("%s\n%s\n", "Local cmdline timestamping failed",
+			"Use the \"-cmd\" option to call a local tool (e.g. \'openssl ts -reply -config config.cnf -queryfile /dev/stdin -out -\')");
+#endif
 #ifdef ENABLE_CURL
 	/* add counter-signature/timestamp */
 	if (options.nturl && add_timestamp_authenticode(sig, &options))

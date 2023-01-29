@@ -31,9 +31,12 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 include(FindOpenSSL)
 include(FindCURL)
 
+find_package(PkgConfig REQUIRED) 
+pkg_check_modules(POpen2 REQUIRED popen2)
+add_library(popen2 IMPORTED OBJECT)
+
 # load CMake project modules
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${PROJECT_SOURCE_DIR}/cmake")
-include(SetBashCompletion)
 include(FindHeaders)
 
 # define the target
@@ -61,6 +64,9 @@ if(NOT OPENSSL_FOUND)
 endif(NOT OPENSSL_FOUND)
 target_include_directories(osslsigncode PRIVATE ${OPENSSL_INCLUDE_DIR})
 target_link_libraries(osslsigncode PRIVATE ${OPENSSL_LIBRARIES})
+
+target_compile_definitions(osslsigncode PRIVATE ENABLE_CMDL=1)
+target_link_options(osslsigncode PRIVATE ${POpen2_LDFLAGS})
 
 # set cURL includes/libraries
 if(CURL_FOUND)
